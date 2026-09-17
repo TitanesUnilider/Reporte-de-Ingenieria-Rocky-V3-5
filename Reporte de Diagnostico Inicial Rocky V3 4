@@ -1,0 +1,56 @@
+# Reporte de Ingeniería: Diagnóstico y Estado Inicial del Módulo EV3
+
+* **Proyecto:** Rocky V3 — WRO Future Engineers 2026
+* **Fecha:** 12 de septiembre de 2026
+* **Módulo:** Control Embebido & Diagnóstico de Base Motriz (LEGO Mindstorms EV3 / ev3dev2)
+* **Archivo Fuente Evaluado:** `robot.py` (Versión Pre-calibración)
+
+---
+
+## 1. Resumen Ejecutivo
+
+Durante la fase de inspección y primeras pruebas en banco del prototipo Rocky V3, se sometió la arquitectura física y el script base de control a una evaluación de estabilidad. El sistema presentó múltiples anomalías críticas que impedían su operación segura: desconexión de actuadores por mapeo erróneo de puertos, oscilación mecánica violenta en el tren delantero (*hunting/chattering*), fallas de sintaxis en el hilo de control de dirección, desbordamiento del flujo de la máquina de estados por indentación y una falla de seguridad grave donde el motor de tracción permanecía encendido de forma indefinida al abortar el programa.
+
+---
+
+## 2. Diagnóstico de Fallas y Estado Inicial
+
+| Subsistema | Síntoma Observado | Causa Raíz Identificada | Severidad |
+| :--- | :--- | :--- | :--- |
+| **Mapeo de Hardware** | Excepción `DeviceNotFound: MediumMotor(outA) is not connected`. | Inconsistencia de cableado: el motor de dirección estaba insertado en el puerto B físico, mientras el script declaraba `STEER_PORT = "outA"`. | **Crítica** (Bloqueaba el inicio) |
+| **Control de Dirección** | Error de sintaxis en tiempo de ejecución (`NameError: name 'false' is not defined`) y congelamiento de lecturas. | Se especificó `Block=false` en lugar de `block=False`. Por omisión, el método operaba de forma síncrona bloqueante, impidiendo la lectura de sensores durante los giros. | **Alta** (Latencia inaceptable)[cite: 3] |
+| **Lazo PID** | Fuerte trepidación y vibración continua en el mecanismo de cremallera y junta homocinética[cite: 3]. | El término derivativo activo ($K_d = -0.4$) provocaba latigazos por amplificación de ruido del giroscopio, operando sin retardo temporal de muestreo ($\Delta t \to 0$)[cite: 3]. | **Alta** (Riesgo de daño en engranes)[cite: 3] |
+| **Parada de Emergencia** | El robot no frenaba al presionar el botón de escape; el motor continuaba girando a potencia constante[cite: 3]. | Se generaba un `UnicodeEncodeError` por caracteres no ASCII ('ó') dentro de `print()` antes de la orden `drive_motor.off()`, abortando el script sin desenergizar el puente H[cite: 3]. | **Crítica** (Riesgo de colisión e integridad física)[cite: 3] |
+| **Máquina de Estados (FSM)** | La maniobra de esquiva de obstáculos no se ejecutaba; el robot ignoraba la evasión de $0.8\text{ s}$[cite: 3]. | Errores de sangría posicionaron la restauración angular (`self.target_angle -= offset`) dentro del bucle `while`, cancelando el giro en la primera iteración[cite: 3]. | **Alta** (Falla de navegación)[cite: 3] |
+| **Estructura del Código** | La llamada `self.stop()` resultaba inaccesible desde el bloque `finally:`[cite: 3]. | La función `def stop(self):` fue declarada en la columna cero (alcance global) en lugar de como método perteneciente a la clase `RockyV3`[cite: 3]. | **Media** (Excepción al cierre)[cite: 3] |
+| **Alimentación Eléctrica** | Desconexiones espontáneas por SSH (*Connection reset*) y caídas de potencia en motores[cite: 3]. | Nivel crítico de carga en la batería del EV3 (*Low battery. Power off or connect a charger soon.*)[cite: 3]. | **Media** (Inestabilidad en pruebas)[cite: 3] |
+
+---
+
+## 3. Registro de Excepciones del Sistema
+
+### A. Excepción por puerto no detectado
+```text
+Traceback (most recent call last):
+  File "robot.py", line 175, in <module>
+    robot = RockyV3()
+  File "robot.py", line 75, in __init__
+    self.steer_motor = MediumMotor(STEER_PORT)
+ev3dev2.DeviceNotFound: MediumMotor(outA) is not connected.
+
+Traceback (most recent call last):
+  File "robot.py", line 107, in run
+    print("[ABORT] Bot\xf3n de parada presionado.")
+UnicodeEncodeError: 'ascii' codec can't encode character '\xf3' in position 11: ordinal not in range(128)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "robot.py", line 176, in <module>
+    robot.run()
+  File "robot.py", line 162, in run
+    self.stop()
+  File "robot.py", line 165, in stop
+    print("[STOP] Deteniendo tracci\xf3n y centrando direcci\xf3n...")
+UnicodeEncodeError: 'ascii' codec can't encode character '\xf3' in position 24: ordinal not in range(128)
+
