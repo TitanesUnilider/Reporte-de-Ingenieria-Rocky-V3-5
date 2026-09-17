@@ -1,0 +1,68 @@
+# Reporte de Ingeniería: Calibración y Estabilización del Módulo EV3
+
+* **Proyecto:** Rocky V3 — WRO Future Engineers 2026
+* **Fecha:** 12 de septiembre de 2026
+* **Módulo:** Control Embebido y Capa de Actuación (LEGO Mindstorms EV3 / ev3dev2)
+* **Archivo Fuente:** `robot.py`
+
+---
+
+## 1. Resumen Ejecutivo
+
+Durante esta sesión de pruebas en banco de trabajo se estabilizó exitosamente la navegación base del robot Rocky V3. Se resolvió el bloqueo de hilo en maniobras de dirección, se eliminó la vibración mecánica de alta frecuencia (*chattering*) en las ruedas delanteras mediante el ajuste fino del controlador PID, y se garantizó la parada de emergencia en seco para cumplir estrictamente con el reglamento oficial de WRO Future Engineers.
+
+---
+
+## 2. Arquitectura de Hardware y Mapeo de Puertos
+
+El software de control ejecutado sobre el bloque EV3 (`ev3dev2`) interactúa con los siguientes componentes:
+
+### Actuadores (Salidas)
+* **Puerto A (`outA`) / Puerto B (`outB`):** Motor mediano (`MediumMotor`) acoplado al sistema de dirección con junta homocinética.
+* **Puerto C (`outC`):** Motor mediano (`MediumMotor`) asignado a la tracción delantera a velocidad crucero continua.
+
+### Sensores (Entradas)
+* **Puerto 1 (`in1`):** Sensor ultrasónico (`UltrasonicSensor`) configurado en modo `US-DIST-CM` para medir la distancia frontal hacia muros y obstáculos.
+* **Puerto 3 (`in3`):** Sensor giroscópico (`GyroSensor`) configurado en modo `GYRO-ANG` para medir la orientación angular del chasis en tiempo real.
+
+---
+
+## 3. Protocolo de Problemas y Soluciones Técnicas
+
+| Área | Problema Identificado | Causa Raíz | Solución de Ingeniería Aplicada |
+| :--- | :--- | :--- | :--- |
+| **Actuador de Dirección** | El programa se congelaba por completo cada vez que las ruedas corregían el ángulo. | El método `on_to_position()` bloqueaba el hilo principal de ejecución mientras el motor completaba el recorrido. | Se integró el parámetro `block=False`, liberando el procesador para lectura continua de sensores a $50\text{ Hz}$. |
+| **Control PID** | Las ruedas delanteras oscilaban violentamente (*chattering*) en avance recto. | El término derivativo ($K_d$) amplificaba variaciones discretas del giroscopio, sumado a la falta de retardo en el bucle. | Se fijó $K_d = 0.0$, $K_p = -0.8$, $\text{DEADBAND} = 4.0^\circ$, y se introdujo un retardo de ciclo de $20\text{ ms}$ (`time.sleep(0.02)`). |
+| **Parada de Emergencia** | El motor de tracción continuaba activo tras presionar el botón de aborto. | Un fallo de codificación (`UnicodeEncodeError`) por caracteres con tilde terminaba el script antes de ejecutar `drive_motor.off()`. | Se reordenó la función `stop()` para cortar la energía antes de las salidas de texto y se sanitizaron los caracteres especiales. |
+| **Estados de la FSM** | La maniobra de esquiva ($0.8\text{ s}$) terminaba en el primer milisegundo de ejecución. | Errores de sangría (indentación) posicionaron la restauración de variables dentro del bucle de espera `while`. | Se corrigió la sangría en `AVOID_OBSTACLE` para que la restauración angular ocurra exclusivamente al finalizar el lapso temporal. |
+
+---
+
+## 4. Máquina de Estados Finitos (FSM)
+
+El flujo de control de Rocky V3 se rige bajo una máquina de estados finitos determinista:
+
+```text
+                  +-------------------------+
+                  |       WAIT_START        |
+                  | (Espera Flecha Derecha) |
+                  +------------+------------+
+                               |
+                               v
+                  +-------------------------+
+             +--->|       DRIVE_GYRO        |<----+
+             |    |  (Giroscopio + P-Loop)  |     |
+             |    +------------+------------+     |
+             |                 |                  |
+   Fin de 0.8s|                 | Distancia <= 20cm|
+             |                 v                  |
+             |    +-------------------------+     |
+             +----+     AVOID_OBSTACLE      +-----+
+                  |   (Giro a +-45 grados)  |
+                  +------------+------------+
+                               |
+                Boton Escape   v
+                  +-------------------------+
+                  |     EMERGENCY_STOP      |
+                  | (Freno Seco y Centrado) |
+                  +-------------------------+
